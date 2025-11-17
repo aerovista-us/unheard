@@ -84,9 +84,7 @@
     }
 
     audio {
-        width: 100%;
-        margin: 18px 0 10px 0;
-        filter: drop-shadow(0 0 8px rgba(120, 180, 140, 0.35));
+        display: none; /* Hidden - we use custom controls */
     }
 
     .bar {
@@ -129,6 +127,28 @@
 
     .ctrl-btn:hover {
         background: rgba(33, 48, 39, 0.9);
+    }
+
+    .ctrl-btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+        pointer-events: none;
+    }
+
+    .bar.locked {
+        pointer-events: none;
+        opacity: 0.6;
+    }
+
+    .track-item.locked {
+        opacity: 0.5;
+        cursor: not-allowed;
+        background: rgba(10, 15, 12, 0.7);
+    }
+
+    .track-item.locked:hover {
+        background: rgba(10, 15, 12, 0.7);
+        transform: none;
     }
 
     .footer {
@@ -263,7 +283,7 @@
         <div class="subtitle" id="currentSubtitle">SwampHop • EchoVerse • Track 1</div>
         <div class="subtitle" id="currentDescription" style="font-size: 0.75rem; color: #6b8a75; margin-top: 4px; font-style: italic; line-height: 1.3; max-width: 90%; margin-left: auto; margin-right: auto;"></div>
 
-        <audio id="audio" controls preload="auto" crossorigin="anonymous">
+        <audio id="audio" preload="auto" crossorigin="anonymous">
             <!-- src is set via JavaScript -->
             Your browser does not support the audio element.
         </audio>
@@ -297,30 +317,35 @@
     // All files are expected under ./audio/
     const playlist = [
         {
+            id: 'creed_of_the_maybe',
             title: "Creed of the Maybe",
             file: "Creed_of_the_Maybe.mp3",
             tag: "Track 1",
             description: "The philosophy. Boundaries. Honesty. The idea that 'maybe' is the only real answer when the path isn't drawn yet."
         },
         {
+            id: 'slow_me_sink_me',
             title: "Slow Me, Sink Me, See Me Clear",
             file: "Slow_Me,_Sink_Me,_See_Me_Clear.mp3",
             tag: "Track 2",
             description: "The internal shift. Finding your own pace. Slow, steady, intentional movement. Wise leadership."
         },
         {
+            id: 'walkin_not_winnin',
             title: "Walkin Even When I'm Not Winnin",
             file: "Walkin_even_when_im_not__Winnin.mp3",
             tag: "Track 3",
             description: "The invitation. 'Walk with me even if I don't have the guarantee.' Leadership without promises; motion without certainty."
         },
         {
+            id: 'three_weeks_drift',
             title: "Three Weeks Deep in the Drift",
             file: "Three_Weeks_Deep_in_the_Drift.mp3",
             tag: "Track 4",
             description: "Visible progress, invisible to them. You've been showing motion for weeks — they can't see it through their fear."
         },
         {
+            id: 'hearing_not_listening',
             title: "Hearing Ain't the Same as Listenin",
             file: "Hearing_Ain't_the_Same_as_Listenin.mp3",
             tag: "Track 5",
@@ -341,6 +366,57 @@
 
     let currentIndex = 0;
     let isPlaying = false;
+
+    // localStorage key for progress
+    const STORAGE_KEY = 'swamphopProgress_v1';
+
+    // Progress data model
+    let progress = null;
+
+    // localStorage Management Functions
+    function loadProgress() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw) {
+                return {
+                    completedTracks: {},   // { [trackId]: true }
+                    highestUnlockedIndex: 0, // you can start track 0
+                };
+            }
+            return JSON.parse(raw);
+        } catch (e) {
+            console.warn('Error reading progress from localStorage:', e);
+            return {
+                completedTracks: {},
+                highestUnlockedIndex: 0,
+            };
+        }
+    }
+
+    function saveProgress(progressData) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(progressData));
+        } catch (e) {
+            console.warn('Error saving progress to localStorage:', e);
+        }
+    }
+
+    // Rules Functions
+    function isTrackCompleted(index) {
+        const track = playlist[index];
+        if (!track) return false;
+        return !!progress.completedTracks[track.id];
+    }
+
+    // Track is playable if it's within "highest unlocked + 1"
+    function isTrackPlayable(index) {
+        return index <= progress.highestUnlockedIndex + 1;
+    }
+
+    function canSkipCurrentSong() {
+        // Can skip if current song is completed
+        return isTrackCompleted(currentIndex);
+    }
 
     // Web Audio API setup for UHD quality and deep bass
     let audioContext = null;
@@ -435,12 +511,40 @@
         }
     }
 
+    // UI State Management
+    function updateUIState() {
+        // Lock/unlock next/prev for THIS track
+        const completed = isTrackCompleted(currentIndex);
+
+        // Next/Prev:
+        // - No skipping forward until current is completed
+        // - No jumping to tracks past highestUnlockedIndex + 1
+        nextBtn.disabled = !completed || currentIndex >= playlist.length - 1;
+        prevBtn.disabled = !completed || currentIndex <= 0;
+
+        // Seek bar:
+        // - Locked (read-only) until this track has been completed once
+        const bar = document.querySelector('.bar');
+        if (completed) {
+            bar.classList.remove('locked');
+            audio.removeAttribute('data-seek-locked');
+        } else {
+            bar.classList.add('locked');
+            audio.setAttribute('data-seek-locked', 'true');
+        }
+    }
+
     function buildPlaylistUI() {
         trackListEl.innerHTML = "";
         playlist.forEach((track, index) => {
             const li = document.createElement('li');
             li.className = 'track-item';
             li.dataset.index = index;
+
+            const canPlay = isTrackPlayable(index);
+            if (!canPlay) {
+                li.classList.add('locked');
+            }
 
             li.innerHTML = `
                 <span>
@@ -451,16 +555,34 @@
             `;
             
             // Add description as tooltip if available
-            if (track.description) {
-                li.title = track.description;
+            let tooltip = track.description || '';
+            if (!canPlay) {
+                const firstIncomplete = findFirstIncomplete(index);
+                if (firstIncomplete !== null) {
+                    tooltip = `Complete "${playlist[firstIncomplete].title}" first to unlock this track. ${tooltip ? '\n\n' + tooltip : ''}`;
+                }
+            }
+            if (tooltip) {
+                li.title = tooltip;
             }
 
             li.addEventListener('click', () => {
-                loadTrack(index, true);
+                if (canPlay) {
+                    loadTrack(index, true);
+                }
             });
 
             trackListEl.appendChild(li);
         });
+    }
+
+    function findFirstIncomplete(upToIndex) {
+        for (let i = 0; i < upToIndex; i++) {
+            if (!isTrackCompleted(i)) {
+                return i;
+            }
+        }
+        return null;
     }
 
     function updateActiveTrackUI() {
@@ -477,6 +599,13 @@
 
     function loadTrack(index, autoPlay = false) {
         if (index < 0 || index >= playlist.length) return;
+        
+        // Enforce order: can't jump ahead of unlocked window
+        if (!isTrackPlayable(index)) {
+            alert('You need to finish the earlier tracks before this one will unlock.');
+            return;
+        }
+        
         currentIndex = index;
         const track = playlist[currentIndex];
         
@@ -500,7 +629,11 @@
         }
 
         updateActiveTrackUI();
+        updateUIState();
         barFill.style.width = '0%';
+        
+        // Reset last safe time for seek lock
+        audio._lastSafeTime = 0;
 
         // Wait for metadata to load before playing
         audio.addEventListener('loadedmetadata', function onMetadataLoaded() {
@@ -519,17 +652,35 @@
         }, { once: true });
     }
 
-    audio.addEventListener('timeupdate', () => {
-        if (!isNaN(audio.duration)) {
-            const percent = (audio.currentTime / audio.duration) * 100;
-            barFill.style.width = percent + '%';
-        }
-    });
 
     audio.addEventListener('ended', () => {
-        // Auto-advance to next track
+        const track = playlist[currentIndex];
+        
+        // Mark track as completed using track ID
+        progress.completedTracks[track.id] = true;
+        
+        // Bump highestUnlockedIndex if we just finished the furthest track so far
+        if (currentIndex > progress.highestUnlockedIndex) {
+            progress.highestUnlockedIndex = currentIndex;
+        }
+        
+        // Save progress
+        saveProgress(progress);
+        
+        // Update UI states (unlock next song, unlock skipping for completed song)
+        updateUIState();
+        buildPlaylistUI(); // Refresh playlist to show newly unlocked tracks
+        updateActiveTrackUI(); // Restore active state
+        
+        // Auto-advance to next track if available and playable
         if (currentIndex < playlist.length - 1) {
-            loadTrack(currentIndex + 1, true);
+            if (isTrackPlayable(currentIndex + 1)) {
+                loadTrack(currentIndex + 1, true);
+            } else {
+                // Next song not yet unlocked
+                isPlaying = false;
+                playPauseBtn.textContent = 'Play';
+            }
         } else {
             // End of album
             isPlaying = false;
@@ -557,7 +708,56 @@
         alert(`Error loading track: ${track.title}\n\nPlease check that the file exists: audio/${track.file}`);
     });
 
+    // Remove native controls to prevent seeking via browser controls
+    audio.controls = false;
+    
+    // Track furthest legit point reached for forward-only progress
+    if (!audio._lastSafeTime) {
+        audio._lastSafeTime = 0;
+    }
+    
+    // Update progress bar and track safe time
+    audio.addEventListener('timeupdate', () => {
+        // Keep track of the furthest legit point they've reached
+        audio._lastSafeTime = audio.currentTime;
+        
+        if (!isNaN(audio.duration)) {
+            const percent = (audio.currentTime / audio.duration) * 100;
+            barFill.style.width = percent + '%';
+        }
+    });
+
+    // Block seeking if track not completed
+    audio.addEventListener('seeking', () => {
+        if (!isTrackCompleted(currentIndex)) {
+            // Block forward-seeking
+            if (audio.currentTime > audio._lastSafeTime) {
+                audio.currentTime = audio._lastSafeTime || 0;
+            }
+        }
+    });
+
+    // Prevent progress bar clicks from seeking when locked
+    const bar = document.querySelector('.bar');
+    bar.addEventListener('click', (e) => {
+        if (audio.getAttribute('data-seek-locked') === 'true') {
+            e.stopPropagation();
+            e.preventDefault();
+            return false;
+        }
+        
+        // Allow seeking if unlocked
+        const rect = bar.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const percent = clickX / rect.width;
+        if (!isNaN(audio.duration)) {
+            audio.currentTime = percent * audio.duration;
+        }
+    });
+
     prevBtn.addEventListener('click', () => {
+        if (prevBtn.disabled) return;
+        
         if (currentIndex > 0) {
             loadTrack(currentIndex - 1, true);
         } else {
@@ -566,6 +766,8 @@
     });
 
     nextBtn.addEventListener('click', () => {
+        if (nextBtn.disabled) return;
+        
         if (currentIndex < playlist.length - 1) {
             loadTrack(currentIndex + 1, true);
         } else {
@@ -593,9 +795,23 @@
     document.addEventListener('touchstart', ensureAudioContext, { once: true });
     document.addEventListener('keydown', ensureAudioContext, { once: true });
 
+    // Initialize on page load
+    function initialize() {
+        // Load progress from localStorage
+        progress = loadProgress();
+        
+        // Build playlist UI with locked states
+        buildPlaylistUI();
+        
+        // Load first track (always playable)
+        loadTrack(0, false);
+        
+        // Set initial UI states
+        updateUIState();
+    }
+
     // Init
-    buildPlaylistUI();
-    loadTrack(0, false);
+    initialize();
 </script>
 
 </body>
